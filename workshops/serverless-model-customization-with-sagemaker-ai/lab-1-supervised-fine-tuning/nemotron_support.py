@@ -25,13 +25,13 @@ Two dataset variants were tried and rejected:
 
 *   `system = "/no_think"` with an unmodified completion: 0.8% valid JSON. The
     directive alone does not change the model's behaviour.
-*   A completion starting with only the closing tag, `</think>\\n\\n`: 0% valid JSON,
-    even though that is what the trained model ends up emitting. The complete pair
-    in the target is what it learns from.
+*   A completion starting with only the closing tag, `</think>\\n\\n`: 0% valid JSON.
+    Note this is what the trained model ends up emitting anyway, since the template
+    supplies the opening tag, so why the target needs the pair is not established.
 
 There is no `system` field here. An earlier version of this dataset carried
-`system = "/no_think"` alongside the block; dropping it scored marginally higher,
-84.6 against 84.2, which is what you would expect from a model that ignores it.
+`system = "/no_think"` alongside the block and scored 84.2 against 84.6, a gap well
+inside run-to-run variation.
 
 Not the only fix
 ----------------
@@ -43,11 +43,11 @@ The same result is reachable without touching the dataset, by editing one line o
     +{%- set enable_thinking = enable_thinking if enable_thinking is defined else False %}
 
 Applied to a checkpoint trained on plain JSON completions, that scores 84.5 / 75.1 /
-76.6, indistinguishable from the numbers above. Note it renders `<think></think>`
-with no newlines, so it is not byte-identical to the block below; the model does not
-need it to be. `enable_thinking` is not exposed anywhere in the SDK, so the edit has
-to be made in S3 and the checkpoint re-registered, and repeated for every new
-checkpoint. The dataset route travels with the weights instead.
+76.6, indistinguishable from the numbers above. It renders `<think></think>` with no
+newlines, so the two routes do not produce identical text. `enable_thinking` is not
+exposed anywhere in the SDK, so the edit has to be made in S3 and the checkpoint
+re-registered, and repeated for every new checkpoint. The dataset route travels with
+the weights instead.
 
 The base model
 --------------
