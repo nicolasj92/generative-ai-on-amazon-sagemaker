@@ -54,10 +54,14 @@ The base model
 
 The base model has nothing trained in, so it reasons past the output cap and cannot
 be scored as it stands. Its responses in the failed run ran 7,055 to 10,457
-characters, every one cut mid-clause and none containing `{`, which puts them just
-over a 2,048-token cap rather than far beyond it. Two routes exist, neither used
-here: raise `max_new_tokens` through the evaluator's `overrides`, or copy the base
-checkpoint out of JumpStart and patch its template.
+characters, every one cut mid-clause and none containing `{`. The cap was on
+generation rather than context: response length is independent of prompt length
+(r = +0.08) and clusters tightly (1.5x between shortest and longest) while the
+prompts vary 10x. By character count that budget was roughly 2,000 to 2,600 tokens,
+well under the 8,192 the SDK defaults to, and the configured value is not recoverable
+from the run's artifacts. Two routes exist, neither used here: raise `max_new_tokens`
+through the evaluator's `overrides`, or copy the base checkpoint out of JumpStart and
+patch its template.
 
 For a base baseline the lab uses Bedrock (`nvidia.nemotron-nano-3-30b`), which
 serves the model with reasoning off and returns JSON directly. That is a property of
