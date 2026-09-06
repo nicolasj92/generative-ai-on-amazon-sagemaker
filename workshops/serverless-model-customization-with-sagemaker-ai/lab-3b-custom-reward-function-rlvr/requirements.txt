@@ -1,9 +1,9 @@
+fsspec
 datasets==5.0.0
-matplotlib
 mlflow
-numpy
-pandas>=2.2
-pyarrow>=15.0
+pandas
+rich
 sagemaker>=3.16.0
 sagemaker-mlflow==0.5.0
+scikit-learn
 tqdm
