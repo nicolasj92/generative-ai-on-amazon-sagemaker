@@ -48,7 +48,7 @@ Align model outputs to human preferences using chosen/rejected response pairs �
 
 ---
 
-### Lab 3: Reinforcement Learning from Verifiable Rewards (RLVR)
+### Lab 3a: Reinforcement Learning from Verifiable Rewards (RLVR)
 
 Fine-tune a model using rule-based reward signals from tasks with objectively verifiable answers — no human annotators or reward model needed.
 
@@ -64,9 +64,9 @@ Fine-tune a model using rule-based reward signals from tasks with objectively ve
 
 ---
 
-### Lab 3a: RLVR with a Custom Reward Function (Optional Extension)
+### Lab 3b: RLVR with a Custom Reward Function (Optional Extension)
 
-This optional extension builds on Lab 3. It reuses the same GSM8K dataset and RLVR workflow, but replaces the built-in rule verifier with a custom Python reward function registered as a SageMaker AI Registry Evaluator.
+This optional extension builds on Lab 3a. It reuses the same GSM8K dataset and RLVR workflow, but replaces the built-in rule verifier with a custom Python reward function registered as a SageMaker AI Registry Evaluator.
 
 **Model:** Qwen 3 - 0.6B Instruct | **Dataset:** [GSM8K](https://huggingface.co/datasets/openai/gsm8k) | **Use case:** Custom reward design for mathematical reasoning
 
@@ -110,11 +110,11 @@ This workshop follows a hands-on, self-paced format. Each lab is independent —
 
 - **Lab 1 (SFT)** is the best starting point: covers the core workflow of data prep, training, evaluation, and deployment
 - **Lab 2 (DPO)** introduces preference-based alignment without a reward model
-- **Lab 3 (RLVR)** demonstrates reinforcement learning with rule-based rewards for tasks with verifiable answers
-- **Lab 3a (Custom Reward RLVR)** is an optional Lab 3 extension that shows how to register and use your own Python reward function evaluator
+- **Lab 3a (RLVR)** demonstrates reinforcement learning with rule-based rewards for tasks with verifiable answers
+- **Lab 3b (Custom Reward RLVR)** is an optional Lab 3a extension that shows how to register and use your own Python reward function evaluator
 - **Lab 4 (RLAIF)** is the most advanced: combines RL training with an AI judge for subjective tasks
 
-Within each lab, run the notebooks in order (1 through 4 or 5). Lab 3a is optional and can be run after Lab 3, or independently if you want to focus on custom reward functions.
+Within each lab, run the notebooks in order (1 through 4 or 5). Lab 3b is optional and can be run after Lab 3a, or independently if you want to focus on custom reward functions.
 
 Each notebook contains:
 
@@ -144,14 +144,14 @@ Each notebook contains:
 │   ├── 3-dpo-evaluation.ipynb
 │   ├── 4-dpo-deployment.ipynb
 │   └── requirements.txt
-├── lab-3-reinforcement-learning-from-verifiable-rewards/
+├── lab-3a-reinforcement-learning-from-verifiable-rewards/
 │   ├── 1-prepare-data.ipynb
 │   ├── 2-trainer.ipynb
 │   ├── 2b-import-model-from-s3.ipynb
 │   ├── 3-evaluation.ipynb
 │   ├── 4-deployment.ipynb
 │   └── requirements.txt
-├── lab-3a-custom-reward-function-rlvr/
+├── lab-3b-custom-reward-function-rlvr/
 │   ├── 1-prepare-data.ipynb
 │   ├── 2-create-reward-function.ipynb
 │   ├── 3-train-with-custom-reward-function.ipynb
