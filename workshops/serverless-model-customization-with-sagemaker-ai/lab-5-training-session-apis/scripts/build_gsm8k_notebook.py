@@ -138,8 +138,10 @@ The prompt uses the model's chat template. The reward is 1.0 when the number aft
 ground truth, 0.0 otherwise.
 """)
 code("""
-def build_prompt(question):
+def build_prompt(question, tokenizer):
     \"\"\"Return the prompt text for one problem, formatted with the model's chat template.
+
+    tokenizer is the model's tokenizer, which you get from the training session in section 3.
 
     apply_chat_template wraps the message in the special tokens the model was trained with (the user turn, then
     the start of the assistant turn). add_generation_prompt=True ends the text where the model starts its answer.
@@ -211,7 +213,7 @@ def evaluate(problems, samples_per_problem=2):
     \"\"\"
     # tokenizer.encode turns the prompt text into token ids. add_special_tokens=False because the chat template
     # already added the special tokens.
-    futures = [sampling_client.sample(tokenizer.encode(build_prompt(q), add_special_tokens=False),
+    futures = [sampling_client.sample(tokenizer.encode(build_prompt(q, tokenizer), add_special_tokens=False),
                                       num_samples=samples_per_problem, sampling_params=SAMPLING) for q, _ in problems]
     results = [f.result() for f in tqdm(futures, desc="evaluation", leave=False)]
     # Each result holds num_samples sequences. A sequence has the sampled token ids (tokens), the logprob of each
@@ -291,7 +293,7 @@ history = []
 for step in range(STEPS):
     t0 = time.time()
     batch = rng.sample(train_problems, PROMPTS_PER_STEP)
-    prompts = [tokenizer.encode(build_prompt(q), add_special_tokens=False) for q, _ in batch]
+    prompts = [tokenizer.encode(build_prompt(q, tokenizer), add_special_tokens=False) for q, _ in batch]
     # One sample() call per problem returns K responses for it.
     futures = [sampling_client.sample(p, num_samples=K, sampling_params=TRAIN_SAMPLING) for p in prompts]
 
