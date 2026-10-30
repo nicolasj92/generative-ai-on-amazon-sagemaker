@@ -26,6 +26,7 @@ from usecases import USECASES  # noqa: E402
 
 
 def parse():
+    """Parse and return the command-line arguments."""
     p = argparse.ArgumentParser()
     p.add_argument("--usecase", required=True, choices=USECASES)
     p.add_argument("--steps", type=int, default=10)
@@ -57,6 +58,10 @@ def parse():
 
 
 async def main(a):
+    """Evaluate the base model, train for a.steps steps with periodic evaluations, evaluate again, and optionally save.
+
+    Writes config.json and the run logs under a.out. SIGTERM cancels the run; the session is closed in all cases.
+    """
     uc = importlib.import_module(USECASES[a.usecase])
     extra = json.loads(a.extra)
     train = uc.load("train", a.train_n, **extra)
@@ -84,6 +89,7 @@ async def main(a):
         log.info("session %s open in %.0fs", run.session_name, time.monotonic() - t_open)
 
         async def do_eval(tag):
+            """Evaluate the current weights on the test tasks and log the summary and rollouts under `tag`."""
             await run.wait_refresh()
             t0 = time.monotonic()
             rs = await run.evaluate(uc.run_agent, test)

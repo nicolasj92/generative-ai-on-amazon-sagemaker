@@ -7,10 +7,12 @@ cells = []
 
 
 def md(s):
+    """Append a markdown cell with the text s, without leading and trailing blank lines."""
     cells.append(nbf.v4.new_markdown_cell(s.strip("\n")))
 
 
 def code(s):
+    """Append a code cell with the source s, without leading and trailing blank lines."""
     cells.append(nbf.v4.new_code_cell(s.strip("\n")))
 
 
@@ -82,6 +84,7 @@ import boto3
 import numpy as np
 
 logging.basicConfig(level=logging.WARNING)
+# Show INFO messages from the lab helpers (lab/runtime.py) only.
 logging.getLogger("lab").setLevel(logging.INFO)
 
 session = boto3.Session()
@@ -92,6 +95,7 @@ ROLE_ARN = session.client("iam").get_role(RoleName="SageMakerTrainingSessionRole
 S3_OUTPUT = f"s3://sagemaker-{REGION}-{ACCOUNT}/training-sessions/scheduling-agent/"
 
 sm = session.client("sagemaker")
+# Create the model package group, or look up its ARN if it already exists.
 try:
     MPG_ARN = sm.create_model_package_group(ModelPackageGroupName="scheduling-agent")["ModelPackageGroupArn"]
 except sm.exceptions.ClientError:
@@ -119,6 +123,8 @@ The next cell loads the requests and prints one with its correct answer.
 code("""
 from usecases.scheduling_hard import load, people_for, valid_for, _fmt
 
+# Each task is a dict with the request text ("message"), the attendees, the duration, the seed of its calendars
+# and the earliest valid start ("expected", minutes after 00:00 UTC, or None when no slot exists).
 train_tasks = load("train", 512)
 test_tasks = load("test", 128)
 task = test_tasks[0]
@@ -149,6 +155,8 @@ gateway, but the same function runs against Amazon Bedrock.
 code("""
 from datetime import datetime
 
+# Strands classes: Agent runs the model and tool loop, @tool turns a Python function into a tool the model can call,
+# OpenAIModel talks to an OpenAI-compatible chat API (the rollout gateway), BedrockModel talks to Amazon Bedrock.
 from strands import Agent, tool
 from strands.agent.conversation_manager import NullConversationManager
 from strands.models.openai import OpenAIModel
@@ -164,6 +172,12 @@ SYSTEM_PROMPT = (
 
 
 def make_tools(people, bookings):
+    \"\"\"Return the two tools of the agent, get_calendar and book_meeting, for one request.
+
+    people maps each first name to that person's calendar (from people_for). bookings is a list that book_meeting
+    appends to, so the reward can be computed from it after the episode.
+    The docstrings of the tool functions below are the tool descriptions that Strands sends to the model.
+    \"\"\"
     @tool
     def get_calendar(person: str) -> str:
         \"\"\"Get a person's city, UTC offset, working hours and busy blocks for the requested day.
@@ -175,6 +189,7 @@ def make_tools(people, bookings):
         if p is None:
             return "unknown person"
         off = int(p["utc_offset"] * 60)
+        # Busy blocks are stored in local minutes. For a calendar shared in UTC, subtract the offset in minutes.
         shift, tz = (off, "UTC") if p["calendar_in_utc"] else (0, "local")
         return json.dumps({"person": person.strip().title(), "city": p["city"], "utc_offset_hours": p["utc_offset"],
                            "working_hours_local": f"{_fmt(p['hours'][0])}-{_fmt(p['hours'][1])}",
@@ -189,6 +204,7 @@ def make_tools(people, bookings):
             start_utc: Start time in UTC as HH:MM on the requested date, or 'none' if no slot exists.
             duration_minutes: Meeting length in minutes.
         \"\"\"
+        # Record the booking only; the reward is computed after the episode from this list.
         bookings.append({"start_utc": str(start_utc).strip(), "duration": int(duration_minutes)})
         return "booked"
 
@@ -196,38 +212,60 @@ def make_tools(people, bookings):
 
 
 def reward_fn(task, bookings):
+    \"\"\"Return the reward for one episode from the bookings the agent made.
+
+    1.0 for the earliest valid slot (or "none" when no slot exists), 0.5 for a valid but later slot, and 0.0 for an
+    invalid slot, a wrong duration, a start time that cannot be parsed, or zero or several bookings.
+    \"\"\"
     if len(bookings) != 1:
         return 0.0
     b = bookings[0]
     if b["start_utc"].lower() == "none":
         return float(task["expected"] is None)
     try:
+        # Keep the last 5 characters, so "2026-11-12 14:00" and "14:00Z" both parse as 14:00.
         t = datetime.strptime(b["start_utc"].replace("Z", "").strip()[-5:], "%H:%M")
     except ValueError:
         return 0.0
-    start = t.hour * 60 + t.minute
+    start = t.hour * 60 + t.minute  # minutes after 00:00 UTC
     if b["duration"] != task["duration"]:
         return 0.0
     people = people_for(task["seed"])
+    # valid_for checks that the meeting is inside the person's working hours and overlaps none of their busy blocks.
     if not all(valid_for(people[a], start, start + task["duration"]) for a in task["attendees"]):
         return 0.0
     return 1.0 if start == task["expected"] else 0.5
 
 
 def make_model(model_config):
+    \"\"\"Return the Strands model for model_config.
+
+    With a "bedrock_model_id" key, the model is that Amazon Bedrock model at temperature 0. Otherwise it is the
+    OpenAI-compatible API at model_config["base_url"], which during training is the rollout gateway.
+    \"\"\"
     if "bedrock_model_id" in model_config:
         return BedrockModel(model_id=model_config["bedrock_model_id"], temperature=0.0)
+    # max_retries=0: a failed model call ends the episode instead of being sent again. The gateway uses api_key to
+    # tell the episodes apart, and it serves the training session's model under the name "policy".
     return OpenAIModel(client_args={"base_url": model_config["base_url"], "api_key": model_config["api_key"],
                                     "max_retries": 0, "timeout": 600},
                        model_id="policy")
 
 
 def run_agent(task, model_config):
+    \"\"\"Run the agent on one request and score it.
+
+    model_config selects the model (see make_model). Returns a dict with the reward, the Strands conversation
+    ("messages"), the error message if the episode ended with an exception (else None), and the number of model
+    calls ("turns").
+    \"\"\"
     bookings = []
+    # NullConversationManager keeps the full conversation (no trimming of old turns). callback_handler=None turns
+    # off printing of the streamed output.
     agent = Agent(model=make_model(model_config), tools=make_tools(people_for(task["seed"]), bookings),
                   system_prompt=SYSTEM_PROMPT, conversation_manager=NullConversationManager(), callback_handler=None)
     try:
-        agent(task["message"])
+        agent(task["message"])  # runs model calls and tool calls until the model answers without a tool call
         error = None
     except Exception as exc:  # turn limit, context limit: the episode ends here
         error = str(exc)[:200]
@@ -238,6 +276,7 @@ def run_agent(task, model_config):
 md("Run one request with a model on Amazon Bedrock to see the agent work. `show` prints the tool calls and results.")
 code("""
 def show(messages, width=300):
+    \"\"\"Print the tool calls (->), tool results (<-) and text of a Strands conversation, cut to width characters.\"\"\"
     for m in messages:
         for b in m.get("content") or []:
             if "toolUse" in b:
@@ -248,6 +287,7 @@ def show(messages, width=300):
                 print(f"  {m['role']}: {b['text'][:width]}")
 
 
+# Run the agent with a model on Amazon Bedrock instead of the rollout gateway.
 out = run_agent(task, {"bedrock_model_id": "openai.gpt-oss-120b-1:0"})
 show(out["messages"])
 print("reward:", out["reward"], "| earliest slot:", _fmt(task["expected"]) if task["expected"] is not None else "none")
@@ -264,20 +304,30 @@ to the gateway, and returns the reward together with the token-level records of 
 code("""
 from lab.runtime import RunConfig, TrainingRun
 
+# Run settings: LoRA rank, learning rate and loss for the update; chat_template_kwargs turns thinking off;
+# max_new_tokens caps each model call, max_context_tokens caps the conversation, max_turns caps the model calls per
+# episode, rollout_timeout (seconds) caps one episode; refresh="sync" waits for the updated weights after each step.
 cfg = RunConfig(region=REGION, base_model_arn=BASE_MODEL_ARN, role_arn=ROLE_ARN,
                 model_package_group_arn=MPG_ARN, s3_output_path=S3_OUTPUT,
                 lora_rank=32, learning_rate=4e-5, loss="ppo",
                 chat_template_kwargs={"enable_thinking": False},
                 max_new_tokens=1536, max_context_tokens=16384, max_turns=10, rollout_timeout=300, refresh="sync")
+# open() starts the training session (returns when it is running) and the rollout gateway on 127.0.0.1.
 run = TrainingRun(cfg).open()
 print("training session:", run.session_name)
 """)
 code("""
 async def evaluate(tasks):
+    \"\"\"Run the agent once on each task at temperature 0 with the current weights.
+
+    Returns (mean reward, list of rollouts). Each rollout has the task (payload), the reward and the result dict
+    of run_agent. The episodes run concurrently.
+    \"\"\"
     rollouts = await run.evaluate(run_agent, tasks, temperature=0.0)
     return float(np.mean([r.reward for r in rollouts])), rollouts
 
 t0 = time.time()
+# Notebooks allow await at the top level of a cell.
 base_score, base_rollouts = await evaluate(test_tasks)
 print(f"base model: mean reward {base_score:.3f} on {len(test_tasks)} held-out requests ({time.time() - t0:.0f}s)")
 """)
@@ -313,6 +363,8 @@ history = []
 rng = random.Random(0)
 
 for step in range(STEPS):
+    # train_step runs GROUPS x 8 episodes, computes the advantages, calls forward_backward and optim_step, and
+    # refreshes the sampler to the updated weights. It returns the step's metrics and the rollouts per group.
     metrics, groups = await run.train_step(run_agent, rng.sample(train_tasks, GROUPS))
     history.append(metrics["reward_mean"])
     print(f"step {step:2d}  train reward {metrics['reward_mean']:.3f}  skipped groups {metrics['groups_skipped']}/{GROUPS}  "
@@ -334,6 +386,7 @@ print(f"base {base_score:.3f} -> trained {trained_score:.3f} on {len(test_tasks)
 """)
 md("Requests the base model got wrong and the trained model got right:")
 code("""
+# Pair each test request's base rollout with its trained rollout (same order) and keep the ones that improved to 1.0.
 fixed = [(b, t) for b, t in zip(base_rollouts, trained_rollouts) if b.reward < 1 and t.reward == 1]
 print(len(fixed), "requests fixed")
 for b, t in fixed[:2]:
@@ -348,11 +401,13 @@ Save the adapter as a model package. It can be deployed to a SageMaker endpoint 
 that serves several adapters on one endpoint.
 """)
 code("""
+# Save the adapter weights and register them as a model package in the model package group (MPG_ARN).
 model_package_arn = run.save(inference=True)
 print(model_package_arn)
 """)
 md("## Clean up\\n\\nStop the training session. It is billed while it is open.")
 code("""
+# Stop the training session and the rollout gateway. The saved model package is kept.
 run.close()
 """)
 md("""

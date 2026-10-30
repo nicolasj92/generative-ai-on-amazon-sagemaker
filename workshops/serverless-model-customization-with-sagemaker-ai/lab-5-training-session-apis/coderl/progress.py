@@ -11,6 +11,7 @@ async def gather(coros, desc: str) -> list:
     bar = tqdm(total=len(coros), desc=desc, leave=False)
 
     async def tick(c):
+        """Await one coroutine, advance the progress bar, and return the coroutine's result."""
         r = await c
         bar.update(1)
         return r

@@ -30,6 +30,7 @@ a = p.parse_args()
 
 
 async def main():
+    """Open a session, evaluate the use case's test tasks, and write eval.jsonl and rollouts.jsonl under --out."""
     uc = importlib.import_module(USECASES[a.usecase])
     tasks = uc.load("test", a.n)
     cfg = RunConfig(region=os.environ["AWS_REGION"], base_model_arn=os.environ["BASE_MODEL_ARN"],

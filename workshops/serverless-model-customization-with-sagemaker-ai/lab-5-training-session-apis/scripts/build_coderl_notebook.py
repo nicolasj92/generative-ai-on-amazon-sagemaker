@@ -15,16 +15,19 @@ cells = []
 
 
 def fill(s):
+    """Replace each {{KEY}} in s with its value from V, then dedent and strip blank edge lines."""
     for k, v in V.items():
         s = s.replace("{{" + k + "}}", v)
     return textwrap.dedent(s).strip("\n")
 
 
 def md(s):
+    """Append a markdown cell with the filled text s."""
     cells.append(nbf.v4.new_markdown_cell(fill(s)))
 
 
 def code(s):
+    """Append a code cell with the filled source s."""
     cells.append(nbf.v4.new_code_cell(fill(s)))
 
 
@@ -124,7 +127,9 @@ code("""
 from coderl.code_interpreter import CodeInterpreterSandbox
 from coderl.sandbox_proxy import LocalSandbox
 
+# The control-plane client creates and describes code interpreters.
 agentcore = session.client("bedrock-agentcore-control")
+# Reuse the code interpreter named code_rl_sandbox if it exists, otherwise create it with network mode SANDBOX.
 found = [c for c in agentcore.list_code_interpreters(maxResults=100)["codeInterpreterSummaries"]
          if c["name"] == "code_rl_sandbox"]
 if found:
@@ -132,12 +137,17 @@ if found:
 else:
     CODE_INTERPRETER_ID = agentcore.create_code_interpreter(
         name="code_rl_sandbox", networkConfiguration={"networkMode": "SANDBOX"})["codeInterpreterId"]
+# Wait until the code interpreter can accept sessions.
 while agentcore.get_code_interpreter(codeInterpreterId=CODE_INTERPRETER_ID)["status"] != "READY":
     time.sleep(5)
 
+# Open 16 Code Interpreter sessions. sandbox.run(request) runs one program in one of them.
 sandbox = CodeInterpreterSandbox(CODE_INTERPRETER_ID, REGION, sessions=16)
+# Serve sandbox.run at http://127.0.0.1:<port>/run_code. The cookbook's grading code reads SANDBOX_URL and
+# SANDBOX_MAX_CONCURRENCY to find the endpoint and to limit the number of requests in flight.
 os.environ["SANDBOX_URL"] = LocalSandbox(sandbox.run, concurrency=16).start()
 os.environ["SANDBOX_MAX_CONCURRENCY"] = "16"
+# Test run: the request and response use the SandboxFusion format. This prints 45.
 print(sandbox.run({"code": "print(sum(range(10)))", "run_timeout": 10})["run_result"]["stdout"])
 """)
 
@@ -162,9 +172,16 @@ print(test_tasks[0].problem[:800])
 
 
 async def grade(task, response_text):
-    code = extract_code_from_model(response_text)
+    \"\"\"Run the code in one response against the task's tests and return (reward, passed).
+
+    task is a problem from load_deepcoder_tasks; task.tests holds its test cases. response_text is the decoded
+    response. passed is True when all tests pass. reward is 1.0 when all tests pass and 0.0 otherwise, minus 0.1
+    when the response has no fenced code block. The code runs in Code Interpreter through SANDBOX_URL.
+    \"\"\"
+    code = extract_code_from_model(response_text)  # the last fenced code block, or None
     passed = False
     if code is not None:
+        # Runs the LiveCodeBench test harness in the sandbox, with a limit of 6 seconds per test.
         passed, _ = await sandbox_check_correctness(task.tests, code, 6)
     reward, _ = deepcoder_reward(response_text, passed)
     return reward, passed
@@ -181,27 +198,49 @@ from sagemaker.train.training_session import AdamParams, SamplingParams, Service
 
 from coderl.progress import gather
 
+# svc is the entry point to the training session APIs.
 svc = ServiceClient(region=REGION, role_arn=ROLE_ARN, model_package_group_arn=MPG_ARN, s3_output_path=S3_OUTPUT)
+# Start a training session with a LoRA adapter (rank 32) on the base model. The call returns when the session is
+# running; the session holds resources until training_client.stop().
 training_client = svc.create_lora_training_client(
     "{{MODEL}}", training_session_name=f"code-rl-{int(time.time())}", rank=32, alpha=64)
+# The model's tokenizer, loaded from the session. It turns text into token ids and back.
 tokenizer = training_client.get_tokenizer()
+# A sampler for the current weights. Before any update these are the base model's weights.
 sampling_client = training_client.create_sampling_client()
+# max_tokens caps the response length; temperature 1.0 keeps the model's probabilities unchanged.
 SAMPLING = SamplingParams(max_tokens=12288, temperature=1.0)
 
 
 def prompt_tokens(task):
+    \"\"\"Return the prompt for one task as a list of token ids.
+
+    apply_hf (from the cookbook) wraps the problem text in a user message and calls tokenizer.apply_chat_template,
+    which adds the special tokens the model was trained with and ends where the model starts its answer. The
+    reasoning setting is passed to the chat template as the reasoning effort.
+    \"\"\"
     return apply_hf(task.problem, tokenizer, reasoning="{{REASONING}}")
 
 
 async def evaluate(client, tasks, samples_per_problem=2):
+    \"\"\"Sample each task samples_per_problem times with the sampler client and grade the responses.
+
+    Returns (pass rate, list of (task, response text) pairs). The pass rate is the share of responses that pass
+    all tests. All sampling requests are submitted first; sample() returns a future right away.
+    \"\"\"
     futures = [client.sample(prompt_tokens(t), num_samples=samples_per_problem, sampling_params=SAMPLING) for t in tasks]
+    # f.result() blocks until the response arrives, so each wait runs in a thread. gather (from coderl/progress.py)
+    # awaits them all with a progress bar and returns the results in order.
     results = await gather([asyncio.to_thread(f.result) for f in futures], "sampling")
+    # Each result holds samples_per_problem sequences with the sampled token ids (tokens), the logprob of each token
+    # (logprobs) and why sampling stopped (stop_reason). tokenizer.decode turns the token ids back into text.
     pairs = [(t, tokenizer.decode(s.tokens)) for t, r in zip(tasks, results) for s in r.sequences]
     graded = await gather([grade(t, x) for t, x in pairs], "grading")
     return float(np.mean([p for _, p in graded])), pairs
 
 
 t0 = time.time()
+# Jupyter runs top-level await in the notebook's event loop.
 base_pass, base_texts = await evaluate(sampling_client, test_tasks)
 print(f"base model: pass rate {base_pass:.1%} on {len(test_tasks)} held-out problems, 2 attempts each ({time.time() - t0:.0f}s)")
 """)
@@ -223,10 +262,20 @@ for 20 steps of 64 problems.
 """)
 code("""
 def build_datum(prompt, response_tokens, logprobs, advantage):
+    \"\"\"Return one training example for forward_backward, in the format the training session API expects.
+
+    prompt is the prompt token ids, response_tokens and logprobs come from one sampled sequence, and advantage is
+    that sequence's advantage. The model is trained to predict each next token, so the inputs are all tokens but
+    the last and the targets are all tokens but the first. Per position the loss also gets:
+      logprobs   - the logprob of the token when it was sampled (0 for prompt positions); the ppo loss uses them to
+                   compare the current weights with the weights that produced the sample
+      advantages - the response's advantage on every response position, 0 on prompt positions
+      weights    - 0 for prompt positions and 1 for response positions, so only the response is trained
+    \"\"\"
     tokens = prompt + list(response_tokens)
     inputs, targets = tokens[:-1], tokens[1:]
-    n_prompt = len(prompt) - 1
-    n_resp = len(inputs) - n_prompt
+    n_prompt = len(prompt) - 1  # positions whose target is still a prompt token
+    n_resp = len(inputs) - n_prompt  # positions whose target is a response token
     seq = len(inputs)
     return {
         "modelInput": {"chunks": [{"tokens": inputs, "type": "encoded_text"}]},
@@ -239,16 +288,18 @@ def build_datum(prompt, response_tokens, logprobs, advantage):
     }
 
 
-STEPS, PROBLEMS_PER_STEP, K = {{GRPO_STEPS}}, 8, 8
-ADAM = AdamParams(learning_rate=1e-5, beta2=0.95, grad_clip_norm=1.0)
+STEPS, PROBLEMS_PER_STEP, K = {{GRPO_STEPS}}, 8, 8  # training steps, problems per step, attempts per problem
+ADAM = AdamParams(learning_rate=1e-5, beta2=0.95, grad_clip_norm=1.0)  # optimizer settings for optim_step
 rng = random.Random(0)
 
 for step in range(STEPS):
     t0 = time.time()
     batch = rng.sample(train_tasks, PROBLEMS_PER_STEP)
     prompts = [prompt_tokens(t) for t in batch]
+    # One sample() call per problem returns K attempts for it.
     futures = [sampling_client.sample(p, num_samples=K, sampling_params=SAMPLING) for p in prompts]
     results = await gather([asyncio.to_thread(f.result) for f in futures], f"step {step} sampling")
+    # Grade all attempts of all problems at once. graded is in order: K entries per problem.
     graded = await gather([grade(t, tokenizer.decode(s.tokens)) for t, r in zip(batch, results) for s in r.sequences],
                           f"step {step} grading")
 
@@ -257,23 +308,27 @@ for step in range(STEPS):
         seqs = result.sequences
         rewards = np.array([r for r, _ in graded[i * K:(i + 1) * K]])
         rewards_all += list(rewards)
-        if rewards.std() < 1e-6:
+        if rewards.std() < 1e-6:  # all K attempts got the same reward: no signal, skip the group
             skipped += 1
             continue
-        advantages = (rewards - rewards.mean()) / rewards.std()
+        advantages = (rewards - rewards.mean()) / rewards.std()  # reward relative to the group
         datums += [build_datum(prompt, s.tokens, s.logprobs, float(a)) for s, a in zip(seqs, advantages)]
 
     if datums:
+        # forward_backward computes the loss and gradients; optim_step applies them. Both return futures, so the
+        # optimizer step is queued right behind the gradient computation.
         fb = training_client.forward_backward(datums, loss_fn="ppo")
         opt = training_client.optim_step(ADAM)
         await asyncio.to_thread(fb.result)
         await asyncio.to_thread(opt.result)
+        # Snapshot the updated weights and get a sampler for them, so the next step samples from the new model.
         sampling_client = await asyncio.to_thread(training_client.save_weights_and_get_sampling_client)
     print(f"step {step}  train reward {np.mean(rewards_all):.3f}  skipped groups {skipped}/{PROBLEMS_PER_STEP}  "
           f"datums {len(datums)}  {time.time() - t0:.0f}s")
 """)
 md("Stop this session before opening the next one.")
 code("""
+# Stop the session and release its resources.
 training_client.stop()
 """)
 
@@ -293,13 +348,16 @@ code("""
 from urllib.parse import urlparse
 
 s3 = session.client("s3")
-src = urlparse(PRETRAINED_ADAPTER)
+src = urlparse(PRETRAINED_ADAPTER)  # src.netloc is the bucket, src.path the key prefix
 dest_prefix = "training-sessions/code-rl/pretrained/model/"
+# Copy every object under the source prefix to the same relative key under dest_prefix in your bucket.
 for page in s3.get_paginator("list_objects_v2").paginate(Bucket=src.netloc, Prefix=src.path.lstrip("/")):
     for obj in page.get("Contents", []):
         rel = obj["Key"][len(src.path.lstrip("/")):]
         s3.copy({"Bucket": src.netloc, "Key": obj["Key"]}, f"sagemaker-{REGION}-{ACCOUNT}", dest_prefix + rel)
 
+# Register the copied files as a model package version in the code-rl group. BaseModel identifies the base model
+# the adapter was trained on, by hub content name and version.
 package_arn = sm.create_model_package(
     ModelPackageGroupName="code-rl",
     ModelPackageDescription="pre-trained Code RL adapter",
@@ -318,8 +376,10 @@ md("""
 `save_weights_and_get_sampling_client()` once to get a sampler for the loaded adapter.
 """)
 code("""
+# Start a new training session from the registered adapter's weights.
 pretrained_client = svc.create_training_client_from_state(
     model_package_arn=package_arn, training_session_name=f"code-rl-pretrained-{int(time.time())}", rank=32, alpha=64)
+# Snapshot the loaded weights and get a sampler for them.
 pretrained_sampler = pretrained_client.save_weights_and_get_sampling_client()
 
 t0 = time.time()
@@ -328,6 +388,7 @@ print(f"pass rate: base {base_pass:.1%} -> pre-trained adapter {pretrained_pass:
       f"({len(test_tasks)} held-out problems, 2 attempts each, {time.time() - t0:.0f}s)")
 """)
 code("""
+# Stop the session and close the Code Interpreter sessions. The code interpreter and the model package are kept.
 pretrained_client.stop()
 sandbox.close()
 """)

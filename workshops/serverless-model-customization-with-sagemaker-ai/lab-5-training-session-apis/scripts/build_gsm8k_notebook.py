@@ -11,16 +11,19 @@ cells = []
 
 
 def fill(s):
+    """Replace the {{KEY}} placeholders in s with the values in V, then dedent and strip blank edge lines."""
     for k, v in V.items():
         s = s.replace("{{" + k + "}}", v)
     return textwrap.dedent(s).strip("\n")
 
 
 def md(s):
+    """Append a markdown cell with the filled text s."""
     cells.append(nbf.v4.new_markdown_cell(fill(s)))
 
 
 def code(s):
+    """Append a code cell with the filled text s."""
     cells.append(nbf.v4.new_code_cell(fill(s)))
 
 

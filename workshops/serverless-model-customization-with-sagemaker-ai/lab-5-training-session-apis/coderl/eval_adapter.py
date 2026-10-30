@@ -32,6 +32,7 @@ p.add_argument("--base-model", default="Qwen/Qwen3.8-27B")
 a = p.parse_args()
 REGION = os.environ["AWS_REGION"]
 
+# Reuse the code interpreter with the given name, or create it with network mode SANDBOX, and wait until it is ready.
 ctl = boto3.client("bedrock-agentcore-control", region_name=REGION)
 found = [c for c in ctl.list_code_interpreters(maxResults=100)["codeInterpreterSummaries"] if c["name"] == a.code_interpreter_name]
 ci_id = found[0]["codeInterpreterId"] if found else ctl.create_code_interpreter(
@@ -39,6 +40,7 @@ ci_id = found[0]["codeInterpreterId"] if found else ctl.create_code_interpreter(
 while ctl.get_code_interpreter(codeInterpreterId=ci_id)["status"] != "READY":
     time.sleep(5)
 ci = CodeInterpreterSandbox(ci_id, REGION, sessions=16)
+# The cookbook's grading code sends programs to SANDBOX_URL, here a local endpoint that forwards to Code Interpreter.
 os.environ["SANDBOX_URL"] = LocalSandbox(ci.run, concurrency=16).start()
 os.environ["SANDBOX_MAX_CONCURRENCY"] = "16"
 
@@ -50,11 +52,17 @@ from training_sessions_cookbook.rl.prompts import apply_gpt_oss, apply_hf  # noq
 
 
 async def main():
+    """Sample and grade the test problems, print the result as a JSON line prefixed with EVAL, and stop the session.
+
+    With --out, the JSON line is also appended to that file. The training session and the Code Interpreter
+    sessions are stopped at the end, also on error.
+    """
     svc = ServiceClient(region=REGION, role_arn=os.environ["ROLE_ARN"],
                         model_package_group_arn=os.environ["MODEL_PACKAGE_GROUP_ARN"], s3_output_path=os.environ["S3_OUTPUT_PATH"])
     t0 = time.time()
     if a.model_package_arn:
         tc = svc.create_training_client_from_state(model_package_arn=a.model_package_arn, rank=32, alpha=64)
+        # A client created from a model package samples the base weights until the loaded weights are saved.
         sc = tc.save_weights_and_get_sampling_client()
     else:
         tc = svc.create_lora_training_client(a.base_model, rank=32, alpha=64)
@@ -65,6 +73,7 @@ async def main():
         sp = SamplingParams(max_tokens=a.max_tokens, temperature=1.0)
 
         def prompt(problem):
+            """Return the prompt token ids for one problem, using the gpt-oss template or the model's chat template."""
             if "gpt-oss" in a.base_model:
                 return tok.encode(apply_gpt_oss(problem, reasoning=a.reasoning), add_special_tokens=False)
             return apply_hf(problem, tok, reasoning=a.reasoning)
@@ -76,6 +85,7 @@ async def main():
         seqs = [s for r in res for s in r.sequences]
 
         async def grade(task, text):
+            """Return True if the last code block in `text` passes all tests of `task` in the sandbox."""
             code = extract_code_from_model(text)
             ok = False
             if code is not None:
@@ -86,6 +96,7 @@ async def main():
         oks = await asyncio.gather(*[grade(t, tok.decode(s.tokens)) for t, r in zip(tasks, res) for s in r.sequences])
         out = {"model_package_arn": a.model_package_arn, "n": a.n, "samples": a.samples, "reasoning": a.reasoning,
                "base_model": a.base_model, "pass_rate": float(np.mean(oks)),
+               # share of responses that reached --max-tokens
                "cut": float(np.mean([s.stop_reason == StopReason.LENGTH for s in seqs])),
                "tokens_mean": float(np.mean([len(s.tokens) for s in seqs])),
                "sample_s": sample_s, "grade_s": time.time() - t2, "seconds": time.time() - t0}

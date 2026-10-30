@@ -32,6 +32,10 @@ def make_model(model_config: dict):
 
 
 def make_agent(model_config: dict, tools: list, system_prompt: str) -> Agent:
+    """Return a Strands agent with the model from make_model(model_config), the given tools and system prompt.
+
+    The agent keeps the full conversation (NullConversationManager) and prints nothing (callback_handler=None).
+    """
     return Agent(
         model=make_model(model_config),
         tools=tools,
@@ -69,14 +73,17 @@ def transcript(messages: list[dict], max_chars: int = 400) -> list[dict]:
 
 
 def count_turns(messages: list[dict]) -> int:
+    """Return the number of assistant messages, which is the number of model calls."""
     return sum(1 for m in messages if m["role"] == "assistant")
 
 
 def count_tool_calls(messages: list[dict]) -> int:
+    """Return the number of tool calls in a Strands conversation."""
     return sum(1 for m in messages for b in m.get("content") or [] if "toolUse" in b)
 
 
 def print_transcript(t: list[dict[str, Any]]) -> None:
+    """Print a transcript from transcript(): tool calls as ->, tool results as <-, text with its role."""
     for e in t:
         if e["role"] == "call":
             print(f"  -> {e['tool']}({e['input']})")

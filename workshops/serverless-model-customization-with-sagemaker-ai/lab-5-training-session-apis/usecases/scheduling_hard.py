@@ -1,8 +1,12 @@
 """Meeting scheduling with per-person working hours, half-hour time zones and
 calendars shared in either local time or UTC.
 
-Same tools and reward as scheduling_agent: 1.0 for the earliest valid slot, 0.5
-for a valid but later slot, 0 for an invalid slot, no booking or several bookings.
+The agent has two tools, get_calendar and book_meeting. The reward is 1.0 for the
+earliest valid slot, 0.5 for a valid but later slot, 0 for an invalid slot, no
+booking or several bookings.
+
+All times are minutes after 00:00: working hours and busy blocks are stored in the
+person's local time, meeting start times in UTC.
 """
 
 from __future__ import annotations
@@ -33,10 +37,17 @@ SYSTEM_PROMPT = (
 
 
 def _fmt(m: int) -> str:
+    """Format minutes after 00:00 as HH:MM, wrapping around midnight."""
     return f"{(m // 60) % 24:02d}:{m % 60:02d}"
 
 
 def make_people(seed: int) -> dict:
+    """Generate the calendars of all people in NAMES for one seed.
+
+    Returns a dict that maps each name to its city, UTC offset in hours, working hours and busy blocks (local
+    minutes), and calendar_in_utc (whether get_calendar shows the busy blocks in UTC). The same seed gives the
+    same calendars.
+    """
     rng = random.Random(seed)
     people = {}
     for name in NAMES:
@@ -44,11 +55,13 @@ def make_people(seed: int) -> dict:
         h0, h1 = rng.choice(HOURS)
         busy = []
         for _ in range(rng.randint(1, 4)):
+            # Busy blocks start on a 15-minute step inside working hours and end at the latest when work ends.
             start = rng.randrange(h0, h1 - 30, 15)
             dur = rng.choice([30, 30, 45, 60, 60, 90, 120])
             busy.append((start, min(start + dur, h1)))
         busy.sort()
         off = int(ZONES[city] * 60)
+        # Show about 35% of the calendars in UTC, but only when every busy block stays on the same date in UTC.
         in_utc = rng.random() < 0.35 and all(0 <= a - off and b - off <= 24 * 60 for a, b in busy)  # same UTC date
         people[name] = {"city": city, "utc_offset": ZONES[city], "hours": (h0, h1), "busy": busy,
                         "calendar_in_utc": in_utc}
@@ -56,15 +69,22 @@ def make_people(seed: int) -> dict:
 
 
 def valid_for(person: dict, start_utc: int, end_utc: int) -> bool:
+    """Return True if a meeting from start_utc to end_utc (UTC minutes) fits the person's day.
+
+    The meeting must lie inside the person's working hours and overlap none of their busy blocks.
+    """
+    # Convert the meeting to the person's local time.
     off = int(person["utc_offset"] * 60)
     s, e = start_utc + off, end_utc + off
     h0, h1 = person["hours"]
     if s < h0 or e > h1:
         return False
+    # No overlap: the meeting ends before each busy block starts, or starts after it ends.
     return all(e <= b0 or s >= b1 for b0, b1 in person["busy"])
 
 
 def earliest_slot(people: dict, attendees: list[str], duration: int) -> int | None:
+    """Return the earliest UTC start (minutes, a multiple of STEP) that fits every attendee, or None if none fits."""
     for start in range(0, 24 * 60, STEP):
         if all(valid_for(people[a], start, start + duration) for a in attendees):
             return start
@@ -72,6 +92,11 @@ def earliest_slot(people: dict, attendees: list[str], duration: int) -> int | No
 
 
 def make_tasks(seed: int, n: int) -> list[dict]:
+    """Generate n meeting requests on the calendars of make_people(seed).
+
+    Each task is a dict with id, seed, attendees, duration (minutes), message (the request text) and expected (the
+    earliest valid UTC start in minutes from earliest_slot, or None when no slot exists).
+    """
     rng = random.Random(seed + 1)
     people = make_people(seed)
     tasks = []
@@ -89,16 +114,22 @@ def make_tasks(seed: int, n: int) -> list[dict]:
     return tasks
 
 
-_PEOPLE: dict[int, dict] = {}
+_PEOPLE: dict[int, dict] = {}  # cache of make_people results by seed
 
 
 def people_for(seed: int) -> dict:
+    """Return the calendars for a seed, generated on first use and cached in _PEOPLE."""
     if seed not in _PEOPLE:
         _PEOPLE[seed] = make_people(seed)
     return _PEOPLE[seed]
 
 
 def make_tools(people: dict, state: dict):
+    """Return the Strands tools get_calendar and book_meeting for one episode.
+
+    people is the result of people_for. book_meeting appends each booking to state["bookings"]. The tool
+    docstrings are the tool descriptions sent to the model.
+    """
     @tool
     def get_calendar(person: str) -> str:
         """Get a person's city, UTC offset, working hours and busy blocks for the requested day.
@@ -112,6 +143,7 @@ def make_tools(people: dict, state: dict):
         h0, h1 = p["hours"]
         off = int(p["utc_offset"] * 60)
         if p["calendar_in_utc"]:
+            # Stored busy blocks are local; subtract the offset to show them in UTC.
             busy, tz = [f"{_fmt(a - off)}-{_fmt(b - off)}" for a, b in p["busy"]], "UTC"
         else:
             busy, tz = [f"{_fmt(a)}-{_fmt(b)}" for a, b in p["busy"]], "local"
@@ -134,6 +166,10 @@ def make_tools(people: dict, state: dict):
 
 
 def _parse(hhmm: str) -> int | None:
+    """Return minutes after 00:00 for an HH:MM time, or None if it cannot be parsed.
+
+    A trailing "Z" is removed and only the last 5 characters are read, so "2026-11-12 14:00" gives 840.
+    """
     try:
         t = datetime.strptime(hhmm.replace("Z", "").strip()[-5:], "%H:%M")
         return t.hour * 60 + t.minute
@@ -142,6 +178,12 @@ def _parse(hhmm: str) -> int | None:
 
 
 def score(task: dict, bookings: list[dict]) -> tuple[float, dict]:
+    """Return (reward, parts) for the bookings of one episode.
+
+    The reward is 1.0 for the earliest valid slot (or "none" when no slot exists), 0.5 for a valid but later slot,
+    and 0.0 otherwise, including a wrong duration and zero or several bookings. parts has "earliest" and "valid",
+    each 1.0 or 0.0.
+    """
     if len(bookings) != 1:
         return 0.0, {"earliest": 0.0, "valid": 0.0}
     b = bookings[0]
@@ -158,6 +200,12 @@ def score(task: dict, bookings: list[dict]) -> tuple[float, dict]:
 
 
 def run_agent(payload: dict, model_config: dict) -> dict:
+    """Run the scheduling agent on one task and score it.
+
+    payload is a task from make_tasks; model_config selects the model (see lab.agents.make_model). Returns the
+    reward, the last booking, the number of model calls (turns), per-episode metrics, a compact transcript and
+    the error message if the episode ended with an exception.
+    """
     state = {"bookings": []}
     agent = make_agent(model_config, make_tools(people_for(payload["seed"]), state), SYSTEM_PROMPT)
     final, error = run(agent, payload["message"])
@@ -170,8 +218,12 @@ def run_agent(payload: dict, model_config: dict) -> dict:
 
 
 def load(split: str, n: int, seed: int = 0) -> list[dict]:
+    """Return n tasks for split "train" or "test", shuffled with seed.
+
+    Train and test use different calendar seeds, so they share no calendars.
+    """
     seeds = [21, 22, 23, 24] if split == "train" else [201]
-    per = -(-n // len(seeds))
+    per = -(-n // len(seeds))  # tasks per seed, rounded up
     tasks = [t for s in seeds for t in make_tasks(s, per)]
     random.Random(seed).shuffle(tasks)
     return tasks[:n]
