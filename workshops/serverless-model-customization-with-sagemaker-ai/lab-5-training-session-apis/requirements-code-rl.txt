@@ -1,0 +1,7 @@
+sagemaker-train==1.27.0
+training-sessions-cookbook[code-rl] @ git+https://github.com/aws/sagemaker-training-sessions-cookbook@7f2d3e0
+boto3>=1.43.79
+matplotlib==3.10.8
+ipykernel==7.1.0
+ipywidgets==8.1.7
+tqdm

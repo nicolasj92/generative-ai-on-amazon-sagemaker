@@ -1,0 +1,11 @@
+sagemaker-train==1.27.0
+agentcore-rl-toolkit[core,gateway]==0.2.0
+transformers==5.12.1
+strands-agents[openai]==1.62.0
+datasets==5.1.0
+boto3>=1.43.79
+numpy
+matplotlib==3.11.2
+ipykernel==7.4.0
+ipywidgets==8.1.7
+tqdm
