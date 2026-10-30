@@ -69,14 +69,13 @@ to 22 minutes. Training for hours does not fit in a workshop, so you:
 
 md("## 1. Setup")
 md("""
-Run the next cell once, then select the kernel **Python (code RL)** (Kernel > Change Kernel; reload the page if it
-is not listed yet).
+Install the requirements, then restart the kernel (**Kernel > Restart Kernel**) so that the new package versions
+are loaded.
 """)
 code("""
-!python -m venv ~/.venvs/code-rl && ~/.venvs/code-rl/bin/pip install -q --upgrade pip \\
-  && ~/.venvs/code-rl/bin/pip install -q -r requirements-code-rl.txt \\
-  && ~/.venvs/code-rl/bin/python -m ipykernel install --user --name code-rl --display-name "Python (code RL)"
+%pip install -r requirements.txt
 """)
+
 code("""
 import asyncio, json, os, random, time
 import boto3

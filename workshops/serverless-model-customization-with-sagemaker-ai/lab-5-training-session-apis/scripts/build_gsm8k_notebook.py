@@ -72,15 +72,13 @@ training algorithm. The last section lists what to change for that.
 
 md("## 1. Setup")
 md("""
-This lab uses its own Python environment so the packages it needs do not change the environment of the other labs.
-Run the next cell once, then select the kernel **Python (training sessions)** (Kernel > Change Kernel; reload the
-page if it is not listed yet).
+Install the requirements, then restart the kernel (**Kernel > Restart Kernel**) so that the new package versions
+are loaded.
 """)
 code("""
-!python -m venv ~/.venvs/training-sessions && ~/.venvs/training-sessions/bin/pip install -q --upgrade pip \\
-  && ~/.venvs/training-sessions/bin/pip install -q -r requirements.txt \\
-  && ~/.venvs/training-sessions/bin/python -m ipykernel install --user --name training-sessions --display-name "Python (training sessions)"
+%pip install -r requirements.txt
 """)
+
 code("""
 import json, random, re, time
 import boto3

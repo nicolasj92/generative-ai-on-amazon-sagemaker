@@ -100,7 +100,7 @@ Use an AI judge model to provide reward signals during training, enabling prefer
 
 ### Lab 5: Training Session APIs
 
-Write your own reinforcement learning loop on a training session: a LoRA training client on a hosted model that you drive from the notebook with `sample`, `forward_backward` and `optim_step`. The three notebooks are independent. They use their own Python environments (see the lab's `README.md`) and run in `us-west-2`.
+Write your own reinforcement learning loop on a training session: a LoRA training client on a hosted model that you drive from the notebook with `sample`, `forward_backward` and `optim_step`. The three notebooks are independent and run in `us-west-2`.
 
 **Model:** Qwen3.8 27B | **Technique:** GRPO (Group Relative Policy Optimization) on training sessions
 
@@ -245,6 +245,5 @@ Each notebook contains:
     ├── images/
     ├── scripts/          # notebook builders and command-line tools
     ├── requirements.txt
-    ├── requirements-code-rl.txt
     └── README.md
 ```

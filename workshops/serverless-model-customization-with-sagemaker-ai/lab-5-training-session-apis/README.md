@@ -26,9 +26,10 @@ minutes for 200 responses), so low reasoning does not shorten the notebook.
 
 ## Setup
 
-Run in SageMaker Studio JupyterLab or on a laptop. The first cell of each notebook creates a virtual environment and
-Jupyter kernel (`Python (training sessions)` for 5a and 5b from `requirements.txt`, `Python (code RL)` for 5c from
-`requirements-code-rl.txt`), so the packages of the other labs are not changed.
+Run in SageMaker Studio JupyterLab or on a laptop. The first code cell of each notebook installs `requirements.txt`
+into the current kernel, like the other labs of this workshop; restart the kernel after it. The versions in
+`requirements.txt` match the other labs (`sagemaker` 3.27.0, `boto3` 1.43.117, `datasets` 5.1.0), so all labs
+can share one kernel. `transformers` is pinned to 5.5.4, the version the training sessions cookbook requires.
 
 Requirements in the account (`us-west-2`):
 
