@@ -27,7 +27,11 @@ def code(s):
 md("""
 # Write your own reinforcement learning loop with SageMaker AI training sessions: {{DATASET}}
 
-With a managed RLVR (reinforcement learning from verifiable rewards) job, as in Lab 3 of this workshop, you supply a
+> **Note:** This is a toy problem. It is small enough to run in minutes, so you can see the mechanics of a
+> reinforcement learning loop and the parts of the training session APIs. It does not show how to build a
+> production math model.
+
+With a managed RLVR (reinforcement learning from verifiable rewards) job, you supply a
 dataset and a reward function, and the service runs the training loop. In this notebook you write that loop yourself
 on a **training session**, a live training client for a LoRA (low-rank adaptation) adapter on `{{MODEL_SHORT}}`,
 with three operations:
