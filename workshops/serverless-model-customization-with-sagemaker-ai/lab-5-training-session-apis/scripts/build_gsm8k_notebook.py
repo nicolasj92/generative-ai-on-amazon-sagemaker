@@ -229,7 +229,8 @@ print("extracted answer:", extract_answer(response_text), "| ground truth:", tru
       "| reward:", reward_fn(response_text, truth))
 """)
 md("""
-The evaluation below does the same for every evaluation problem, twice each. `sample` returns a future right away,
+The evaluation below does the same for every evaluation problem, twice each. Sampling is random at temperature
+0.7, so each problem is sampled twice to reduce the noise in the accuracy. `sample` returns a future right away,
 so all requests are submitted before waiting on any of them.
 """)
 code("""
