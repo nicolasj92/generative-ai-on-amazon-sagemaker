@@ -193,8 +193,44 @@ sampling_client = training_client.create_sampling_client()
 print("session:", training_client.training_session_name)
 """)
 md("""
-`sample` returns a future right away, so all requests are submitted before waiting on any of them.
-Each evaluation problem is sampled twice.
+### One example: tokenizer and sampler
+
+The model reads and writes token ids, not text. The tokenizer converts between the two. The cell below builds the
+prompt for one problem, shows the text the chat template produces, and encodes it into token ids.
+""")
+code("""
+question, truth = eval_problems[0]
+prompt_text = build_prompt(question, tokenizer)
+print(prompt_text)
+
+prompt_tokens = tokenizer.encode(prompt_text, add_special_tokens=False)
+print(len(prompt_tokens), "tokens. The first 20 ids:", prompt_tokens[:20])
+# Decoding each id on its own shows which piece of text it stands for.
+print("as text pieces:", [tokenizer.decode([t]) for t in prompt_tokens[:20]])
+""")
+md("""
+The sampler sends the token ids to the model and returns the generated tokens. Each sampled sequence has the token
+ids (`tokens`), the log probability the model assigned to each of them (`logprobs`), and why sampling stopped
+(`stop_reason`). Decoding the tokens gives the response text, which the reward function scores.
+""")
+code("""
+# sample() returns a future; result() waits for the response.
+result = sampling_client.sample(prompt_tokens, num_samples=1,
+                                sampling_params=SamplingParams(max_tokens=512, temperature=0.7, top_p=0.9)).result()
+seq = result.sequences[0]
+print(len(seq.tokens), "tokens generated, stop reason:", seq.stop_reason)
+print("first 5 token ids:", seq.tokens[:5])
+print("their logprobs:   ", [round(lp, 3) for lp in seq.logprobs[:5]])
+
+response_text = tokenizer.decode(seq.tokens)
+print("\\n--- response ---\\n" + response_text)
+print("--- end ---\\n")
+print("extracted answer:", extract_answer(response_text), "| ground truth:", truth,
+      "| reward:", reward_fn(response_text, truth))
+""")
+md("""
+The evaluation below does the same for every evaluation problem, twice each. `sample` returns a future right away,
+so all requests are submitted before waiting on any of them.
 """)
 code("""
 from sagemaker.train.training_session import StopReason
