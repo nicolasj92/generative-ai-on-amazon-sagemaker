@@ -139,17 +139,33 @@ ground truth, 0.0 otherwise.
 """)
 code("""
 def build_prompt(question):
+    \"\"\"Return the prompt text for one problem, formatted with the model's chat template.
+
+    apply_chat_template wraps the message in the special tokens the model was trained with (the user turn, then
+    the start of the assistant turn). add_generation_prompt=True ends the text where the model starts its answer.
+    tokenize=False returns a string; it is tokenized later with tokenizer.encode. reasoning_effort="low" is an
+    option of the Qwen3.8 chat template that asks for a short thinking phase.
+    \"\"\"
     messages = [{"role": "user", "content": f"{question}\\n\\nSolve this step by step, then give the final numeric "
                                             "answer on its own line after \\"#### \\"."}]
     return tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, reasoning_effort="{{EFFORT}}")
 
 
 def extract_answer(text):
+    \"\"\"Return the number after the last "####" in the last 300 characters of a response, or None.
+
+    Commas and a trailing period are removed, so "#### 1,234." gives "1234".
+    \"\"\"
     found = re.findall(r"####\\s*\\$?\\s*(-?[0-9][0-9,]*\\.?[0-9]*)", text[-300:])
     return found[-1].replace(",", "").rstrip(".") if found else None
 
 
 def reward_fn(text, truth):
+    \"\"\"Return 1.0 if the response's final answer equals the ground truth, else 0.0.
+
+    The comparison allows a relative difference of 1e-6, because GSM-Hard answers can have many digits.
+    A response without a "####" answer, for example one cut off at the token budget, gets 0.0.
+    \"\"\"
     answer = extract_answer(text)
     try:
         return float(answer is not None and abs(float(answer) - float(truth)) <= 1e-6 * max(1.0, abs(float(truth))))
@@ -164,11 +180,9 @@ md("""
 a sampler for the current weights (the base model, before any update).
 """)
 code("""
-training_client = svc.create_lora_training_client(
-    "{{MODEL}}", training_session_name=f"{{TAG}}-grpo-{int(time.time())}", rank=32, alpha=64)
-tokenizer = training_client.get_tokenizer()
-sampling_client = training_client.create_sampling_client()
-print("session:", training_client.training_session_name)
+# Start a training session with a LoRA adapter (rank 32) on the base model. The call returns when the session is
+# running; the session holds resources until # Stop the session and release its resources. The saved model package is kept.
+training_client.stop()
 """)
 md("""
 `sample` returns a future right away, so all requests are submitted before waiting on any of them.
@@ -178,25 +192,31 @@ code("""
 from sagemaker.train.training_session import StopReason
 from tqdm.auto import tqdm
 
-MAX_TOKENS = 512
+MAX_TOKENS = 512  # token budget for thinking and answer together
+# Sampling settings for evaluation: max_tokens caps the response length, temperature and top_p control randomness.
 SAMPLING = SamplingParams(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.9)
 
 
 def evaluate(problems, samples_per_problem=2):
+    \"\"\"Sample each problem samples_per_problem times with the current sampler and score the responses.
+
+    Returns (accuracy, share of responses cut at MAX_TOKENS, mean response length in tokens).
+    All requests are submitted first: sample() returns a future right away, and result() waits for it.
+    \"\"\"
+    # tokenizer.encode turns the prompt text into token ids. add_special_tokens=False because the chat template
+    # already added the special tokens.
     futures = [sampling_client.sample(tokenizer.encode(build_prompt(q), add_special_tokens=False),
                                       num_samples=samples_per_problem, sampling_params=SAMPLING) for q, _ in problems]
     results = [f.result() for f in tqdm(futures, desc="evaluation", leave=False)]
+    # Each result holds num_samples sequences. A sequence has the sampled token ids (tokens), the logprob of each
+    # token (logprobs) and why sampling stopped (stop_reason).
     seqs = [(s, truth) for (_, truth), r in zip(problems, results) for s in r.sequences]
+    # tokenizer.decode turns the sampled token ids back into text for the reward function.
     accuracy = float(np.mean([reward_fn(tokenizer.decode(s.tokens), truth) for s, truth in seqs]))
+    # StopReason.LENGTH: the response reached MAX_TOKENS before the model ended it.
     cut = float(np.mean([s.stop_reason == StopReason.LENGTH for s, _ in seqs]))
     tokens = float(np.mean([len(s.tokens) for s, _ in seqs]))
     return accuracy, cut, tokens
-
-
-t0 = time.time()
-base_accuracy, base_cut, base_tokens = evaluate(eval_problems)
-print(f"base model: accuracy {base_accuracy:.1%}, answers cut at {MAX_TOKENS} tokens {base_cut:.1%}, "
-      f"mean length {base_tokens:.0f} tokens ({time.time() - t0:.0f}s)")
 """)
 
 md("""
@@ -225,10 +245,19 @@ Each step of the loop below does this for {{PROMPTS}} problems at once:
 """)
 code("""
 def build_datum(prompt_tokens, response_tokens, logprobs, advantage):
+    \"\"\"Return one training example for forward_backward, in the format the training session API expects.
+
+    The model is trained to predict each next token, so the inputs are all tokens but the last and the targets are
+    all tokens but the first. Per position the loss also gets:
+      logprobs   - the logprob of the token when it was sampled (0 for prompt positions); the ppo loss uses them to
+                   compare the current weights with the weights that produced the sample
+      advantages - the response's advantage on every response position, 0 on prompt positions
+      weights    - 0 for prompt positions and 1 for response positions, so only the response is trained
+    \"\"\"
     tokens = prompt_tokens + list(response_tokens)
     inputs, targets = tokens[:-1], tokens[1:]
-    n_prompt = len(prompt_tokens) - 1
-    n_resp = len(inputs) - n_prompt
+    n_prompt = len(prompt_tokens) - 1  # positions whose target is still a prompt token
+    n_resp = len(inputs) - n_prompt    # positions whose target is a response token
     seq = len(inputs)
     return {
         "modelInput": {"chunks": [{"tokens": inputs, "type": "encoded_text"}]},
@@ -241,9 +270,9 @@ def build_datum(prompt_tokens, response_tokens, logprobs, advantage):
     }
 """)
 code("""
-STEPS, PROMPTS_PER_STEP, K = 12, {{PROMPTS}}, 8
-TRAIN_SAMPLING = SamplingParams(max_tokens=MAX_TOKENS, temperature=1.0)
-ADAM = AdamParams(learning_rate={{LR}}, beta2=0.95, grad_clip_norm=1.0)
+STEPS, PROMPTS_PER_STEP, K = 12, {{PROMPTS}}, 8  # training steps, problems per step, responses per problem
+TRAIN_SAMPLING = SamplingParams(max_tokens=MAX_TOKENS, temperature=1.0)  # temperature 1.0 for varied responses
+ADAM = AdamParams(learning_rate={{LR}}, beta2=0.95, grad_clip_norm=1.0)  # optimizer settings for optim_step
 rng = random.Random(0)
 history = []
 
@@ -251,6 +280,7 @@ for step in range(STEPS):
     t0 = time.time()
     batch = rng.sample(train_problems, PROMPTS_PER_STEP)
     prompts = [tokenizer.encode(build_prompt(q), add_special_tokens=False) for q, _ in batch]
+    # One sample() call per problem returns K responses for it.
     futures = [sampling_client.sample(p, num_samples=K, sampling_params=TRAIN_SAMPLING) for p in prompts]
 
     datums, rewards_all, skipped = [], [], 0
@@ -258,16 +288,19 @@ for step in range(STEPS):
         seqs = future.result().sequences
         rewards = np.array([reward_fn(tokenizer.decode(s.tokens), truth) for s in seqs])
         rewards_all += list(rewards)
-        if rewards.std() < 1e-6:
+        if rewards.std() < 1e-6:  # all K responses got the same reward: no signal, skip the group
             skipped += 1
             continue
-        advantages = (rewards - rewards.mean()) / rewards.std()
+        advantages = (rewards - rewards.mean()) / rewards.std()  # reward relative to the group
         datums += [build_datum(prompt, s.tokens, s.logprobs, float(a)) for s, a in zip(seqs, advantages)]
 
     if datums:
+        # forward_backward computes the loss and gradients; optim_step applies them. Both return futures, so the
+        # optimizer step is queued right behind the gradient computation.
         fb = training_client.forward_backward(datums, loss_fn="ppo")
         opt = training_client.optim_step(ADAM)
         fb.result(); opt.result()
+        # Snapshot the updated weights and get a sampler for them, so the next step samples from the new model.
         sampling_client = training_client.save_weights_and_get_sampling_client()
     history.append(float(np.mean(rewards_all)))
     print(f"step {step:2d}  train accuracy {history[-1]:.1%}  skipped groups {skipped}/{PROMPTS_PER_STEP}  "
@@ -295,6 +328,7 @@ to a SageMaker endpoint like any other model package. `save_state` also stores t
 training with `create_training_client_from_state_with_optimizer`.
 """)
 code("""
+# Save the current adapter and register it as a model package in the model package group (MPG_ARN).
 weights = training_client.save_weights_for_sampler(description="{{TAG}} grpo").result()
 print("adapter:", weights.model_package_arn)
 """)
