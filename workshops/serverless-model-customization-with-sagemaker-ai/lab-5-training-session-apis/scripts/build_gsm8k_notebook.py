@@ -181,8 +181,14 @@ a sampler for the current weights (the base model, before any update).
 """)
 code("""
 # Start a training session with a LoRA adapter (rank 32) on the base model. The call returns when the session is
-# running; the session holds resources until # Stop the session and release its resources. The saved model package is kept.
-training_client.stop()
+# running; the session holds resources until training_client.stop() at the end of the notebook.
+training_client = svc.create_lora_training_client(
+    "{{MODEL}}", training_session_name=f"{{TAG}}-grpo-{int(time.time())}", rank=32, alpha=64)
+# The model's tokenizer, loaded from the session. It turns text into token ids and back.
+tokenizer = training_client.get_tokenizer()
+# A sampler for the current weights. Before any update these are the base model's weights.
+sampling_client = training_client.create_sampling_client()
+print("session:", training_client.training_session_name)
 """)
 md("""
 `sample` returns a future right away, so all requests are submitted before waiting on any of them.
@@ -217,6 +223,12 @@ def evaluate(problems, samples_per_problem=2):
     cut = float(np.mean([s.stop_reason == StopReason.LENGTH for s, _ in seqs]))
     tokens = float(np.mean([len(s.tokens) for s, _ in seqs]))
     return accuracy, cut, tokens
+
+
+t0 = time.time()
+base_accuracy, base_cut, base_tokens = evaluate(eval_problems)
+print(f"base model: accuracy {base_accuracy:.1%}, answers cut at {MAX_TOKENS} tokens {base_cut:.1%}, "
+      f"mean length {base_tokens:.0f} tokens ({time.time() - t0:.0f}s)")
 """)
 
 md("""
@@ -334,6 +346,7 @@ print("adapter:", weights.model_package_arn)
 """)
 md("Stop the session. It holds resources while it is open.")
 code("""
+# Stop the session and release its resources. The saved model package is kept.
 training_client.stop()
 """)
 md("""
