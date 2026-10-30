@@ -61,6 +61,21 @@ code("""
 %pip install -r requirements.txt
 """)
 
+md("""
+The next cell connects to your AWS account:
+
+- **Region and account** come from the default boto3 session, so the training session runs in the Region your
+  notebook uses.
+- **`ROLE_ARN`** is the IAM role `SageMakerTrainingSessionRole`. The training session service assumes it to read the
+  base model and write adapters to S3. The workshop stack creates it.
+- **`S3_OUTPUT`** is the S3 prefix where the service writes the adapter files, in your
+  `sagemaker-<region>-<account>` bucket.
+- **`MPG_ARN`** is a model package group, `scheduling-agent`. Every adapter you save is registered there as a model package
+  version. The cell creates the group, or reuses it if it already exists.
+- **`BASE_MODEL_ARN`** identifies `Qwen3.8-27B` in the SageMaker Public Hub. `TrainingRun` opens the session with it
+  in section 3.
+- **Logging:** the `lab` helpers report at `INFO` level when the session is ready or a weight refresh fails.
+""")
 code("""
 import asyncio, json, logging, random, time
 import boto3

@@ -76,6 +76,20 @@ code("""
 %pip install -r requirements.txt
 """)
 
+md("""
+The next cell connects to your AWS account:
+
+- **Region and account** come from the default boto3 session, so the training session runs in the Region your
+  notebook uses.
+- **`ROLE_ARN`** is the IAM role `SageMakerTrainingSessionRole`. The training session service assumes it to read the
+  base model and write adapters to S3. The workshop stack creates it.
+- **`S3_OUTPUT`** is the S3 prefix where the service writes the adapter files, in your
+  `sagemaker-<region>-<account>` bucket.
+- **`MPG_ARN`** is a model package group, `code-rl`. Every adapter you save is registered there as a model package
+  version. The cell creates the group, or reuses it if it already exists.
+- **`PRETRAINED_ADAPTER`** is the S3 prefix of the adapter trained beforehand, used in section 5. It comes from the
+  environment variable `PRETRAINED_ADAPTER_S3`; the workshop environment sets it for you.
+""")
 code("""
 import asyncio, json, os, random, time
 import boto3
